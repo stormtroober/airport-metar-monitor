@@ -1,14 +1,14 @@
-package main
+package weather
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/url"
-	"time"
+"encoding/json"
+"fmt"
+"net/http"
+"net/url"
+"time"
 )
 
-// AVWXClient gestisce le chiamate all'API AVWX.
+// AVWXClient handles calls to the AVWX API.
 type AVWXClient struct {
 	token      string
 	httpClient *http.Client
@@ -30,32 +30,32 @@ func (c *AVWXClient) doGet(endpoint string) (*http.Response, error) {
 	return c.httpClient.Do(req)
 }
 
-// FloatValue è un campo numerico dell'API AVWX (value può essere null).
+// FloatValue is a numeric field in the AVWX API (value can be null).
 type FloatValue struct {
 	Value *float64 `json:"value"`
 	Repr  string   `json:"repr"`
 }
 
-// MetarTime rappresenta il campo time del METAR.
+// MetarTime represents the time field of the METAR.
 type MetarTime struct {
-	Repr string `json:"repr"` // es. "271750Z"
-	Dt   string `json:"dt"`   // es. "2026-03-27T17:50:00Z"
+	Repr string `json:"repr"` // e.g. "271750Z"
+	Dt   string `json:"dt"`   // e.g. "2026-03-27T17:50:00Z"
 }
-// WxCode rappresenta un fenomeno meteorologico nel METAR (es. pioggia, nebbia).
+
+// WxCode represents a meteorological phenomenon in the METAR (e.g. rain, fog).
 type WxCode struct {
 	Repr  string `json:"repr"`
 	Value string `json:"value"`
 }
 
-
-// Cloud rappresenta uno strato nuvoloso nel METAR.
+// Cloud represents a cloud layer in the METAR.
 type Cloud struct {
 	Type     string   `json:"type"`     // FEW, SCT, BKN, OVC, SKC, CLR...
-	Altitude *float64 `json:"altitude"` // in centinaia di piedi (può essere null)
+	Altitude *float64 `json:"altitude"` // in hundreds of feet (can be null)
 	Repr     string   `json:"repr"`
 }
 
-// MetarResponse è il report METAR restituito da AVWX.
+// MetarResponse is the METAR report returned by AVWX.
 type MetarResponse struct {
 	Raw           string       `json:"raw"`
 	Station       string       `json:"station"`
@@ -66,7 +66,7 @@ type MetarResponse struct {
 	Visibility    FloatValue   `json:"visibility"`
 	Clouds        []Cloud      `json:"clouds"`
 	WxCodes       []WxCode     `json:"wx_codes"`
-	WindDirection FloatValue   `json:"wind_direction"` // nil se variabile
+	WindDirection FloatValue   `json:"wind_direction"` // nil if variable
 	WindSpeed     FloatValue   `json:"wind_speed"`
 	WindGust      FloatValue   `json:"wind_gust"`
 }
@@ -87,7 +87,7 @@ func (c *AVWXClient) FetchMetar(icao string) (*MetarResponse, error) {
 	return &result, nil
 }
 
-// Runway rappresenta una pista di un aeroporto.
+// Runway represents an airport runway.
 type Runway struct {
 	Ident1   string  `json:"ident1"`
 	Ident2   string  `json:"ident2"`
@@ -96,7 +96,7 @@ type Runway struct {
 	LengthFt int     `json:"length_ft"`
 }
 
-// StationResponse rappresenta i dati di una stazione AVWX.
+// StationResponse represents the data of an AVWX station.
 type StationResponse struct {
 	ICAO      string   `json:"icao"`
 	IATA      string   `json:"iata"`
@@ -124,7 +124,7 @@ func (c *AVWXClient) FetchStation(icao string) (*StationResponse, error) {
 	return &result, nil
 }
 
-// StationInfo è un elemento del risultato di ricerca stazioni.
+// StationInfo is an item from the station search results.
 type StationInfo struct {
 	ICAO    string `json:"icao"`
 	IATA    string `json:"iata"`
@@ -133,7 +133,7 @@ type StationInfo struct {
 	Country string `json:"country"`
 }
 
-// SearchStations cerca stazioni per nome/città. Restituisce al massimo n risultati.
+// SearchStations searches for stations by name/city. Returns at most n results.
 func (c *AVWXClient) SearchStations(query string, n int) ([]StationInfo, error) {
 	endpoint := fmt.Sprintf("/station/search?text=%s&n=%d", url.QueryEscape(query), n)
 	resp, err := c.doGet(endpoint)

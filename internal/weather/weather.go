@@ -1,41 +1,41 @@
-package main
+package weather
 
 import (
-	"fmt"
-	"math"
-	"strings"
-	"time"
+"fmt"
+"math"
+"strings"
+"time"
 )
 
-// RunwayAnalysis contiene le componenti di vento per una singola direzione di pista.
+// RunwayAnalysis contains wind components for a single runway direction.
 type RunwayAnalysis struct {
-	Ident     string  // es. "04" o "22"
-	Crosswind float64 // componente traversa in nodi (sempre ≥ 0)
-	Headwind  float64 // positivo = vento di prua, negativo = vento in coda
+	Ident     string  // e.g. "04" or "22"
+	Crosswind float64 // crosswind component in knots (always >= 0)
+	Headwind  float64 // positive = headwind, negative = tailwind
 }
 
-// AnalyzeRunways calcola headwind/crosswind per ogni direzione (ident1 e ident2) di ogni pista.
-// Restituisce nil se windDir è nil (vento variabile) o non ci sono piste.
+// AnalyzeRunways calculates headwind/crosswind for each direction (ident1 and ident2) of each runway.
+// Returns nil if windDir is nil (variable wind) or there are no runways.
 func AnalyzeRunways(runways []Runway, windDir *float64, windSpeedKt float64) []RunwayAnalysis {
 	if windDir == nil || len(runways) == 0 {
 		return nil
 	}
 	out := make([]RunwayAnalysis, 0, len(runways)*2)
 	for _, rwy := range runways {
-		// Direzione 1 (es. 04)
+		// Direction 1 (e.g. 04)
 		cross1, head1 := windComponents(*windDir, windSpeedKt, rwy.Bearing1)
 		out = append(out, RunwayAnalysis{
-			Ident:     rwy.Ident1,
-			Crosswind: math.Abs(cross1),
-			Headwind:  head1,
-		})
-		// Direzione 2 (es. 22, opposta)
+Ident:     rwy.Ident1,
+Crosswind: math.Abs(cross1),
+Headwind:  head1,
+})
+		// Direction 2 (e.g. 22, opposite)
 		cross2, head2 := windComponents(*windDir, windSpeedKt, rwy.Bearing2)
 		out = append(out, RunwayAnalysis{
-			Ident:     rwy.Ident2,
-			Crosswind: math.Abs(cross2),
-			Headwind:  head2,
-		})
+Ident:     rwy.Ident2,
+Crosswind: math.Abs(cross2),
+Headwind:  head2,
+})
 	}
 	return out
 }
@@ -45,27 +45,27 @@ func windComponents(windDir, windSpeedKt, runwayHdg float64) (crosswind, headwin
 	return windSpeedKt * math.Sin(angle), windSpeedKt * math.Cos(angle)
 }
 
-// FormatMetarMessage formatta il messaggio completo da inviare su Telegram (HTML).
+// FormatMetarMessage formats the full message to be sent on Telegram (HTML).
 func FormatMetarMessage(station *StationResponse, metar *MetarResponse) string {
 	var sb strings.Builder
 
-	// Intestazione
-	sb.WriteString(fmt.Sprintf("✈️ <b>%s</b> — %s\n", station.ICAO, htmlEscape(station.Name)))
+	// Header
+	sb.WriteString(fmt.Sprintf("✈️ <b>%s</b> — %s\n", station.ICAO, HTMLEscape(station.Name)))
 	if station.City != "" {
-		sb.WriteString(fmt.Sprintf("📍 %s, %s\n", htmlEscape(station.City), station.Country))
+		sb.WriteString(fmt.Sprintf("📍 %s, %s\n", HTMLEscape(station.City), station.Country))
 	}
-	sb.WriteString(fmt.Sprintf("🕐 %s\n\n", formatMetarTime(metar.Time)))
+	sb.WriteString(fmt.Sprintf("🕐 %s\n\n", FormatMetarTime(metar.Time)))
 
-	// METAR raw
-	sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", htmlEscape(metar.Raw)))
+	// Raw METAR
+	sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", HTMLEscape(metar.Raw)))
 
-	// Vento
+	// Wind
 	sb.WriteString(fmt.Sprintf("🌬️ Vento: %s\n", formatWind(metar)))
 
-	// Briefing meteo sintetico
+	// Concise weather briefing
 	sb.WriteString(formatBriefing(metar))
 
-	// Analisi piste
+	// Runway analysis
 	if metar.WindDirection.Value != nil && metar.WindSpeed.Value != nil && len(station.Runways) > 0 {
 		analyses := AnalyzeRunways(station.Runways, metar.WindDirection.Value, *metar.WindSpeed.Value)
 		if len(analyses) > 0 {
@@ -79,11 +79,11 @@ func FormatMetarMessage(station *StationResponse, metar *MetarResponse) string {
 	return sb.String()
 }
 
-// formatBriefing produce un brevissimo riassunto delle condizioni meteo.
+// formatBriefing produces a very short summary of weather conditions.
 func formatBriefing(metar *MetarResponse) string {
 	var parts []string
 
-	// Visibilità
+	// Visibility
 	if metar.Visibility.Value != nil {
 		vis := *metar.Visibility.Value
 		switch {
@@ -100,19 +100,19 @@ func formatBriefing(metar *MetarResponse) string {
 		parts = append(parts, fmt.Sprintf("visibilità %s", metar.Visibility.Repr))
 	}
 
-	// Nuvole
+	// Clouds
 	cloudStr := formatClouds(metar.Clouds)
 	if cloudStr != "" {
 		parts = append(parts, cloudStr)
 	}
 
-	// Fenomeni wx (pioggia, nebbia, etc.)
+	// Weather phenomena (rain, fog, etc.)
 	wxStr := formatWxCodes(metar.WxCodes)
 	if wxStr != "" {
 		parts = append(parts, wxStr)
 	}
 
-	// Temperatura/punto di rugiada
+	// Temperature/dewpoint
 	if metar.Temperature.Value != nil && metar.Dewpoint.Value != nil {
 		spread := *metar.Temperature.Value - *metar.Dewpoint.Value
 		tempStr := fmt.Sprintf("T %.0f°C / DP %.0f°C", *metar.Temperature.Value, *metar.Dewpoint.Value)
@@ -132,7 +132,7 @@ func formatClouds(clouds []Cloud) string {
 	if len(clouds) == 0 {
 		return ""
 	}
-	// Troviamo lo strato più significativo (BKN/OVC hanno priorità)
+	// Find the most significant layer (BKN/OVC have priority)
 	significant := ""
 	for _, c := range clouds {
 		switch c.Type {
@@ -188,19 +188,19 @@ func formatWxCodes(codes []WxCode) string {
 	return strings.Join(wxParts, " ")
 }
 
-// formatRunwayAnalyses raggruppa le analisi per pista e mostra entrambe le direzioni,
-// evidenziando quella preferibile per ogni pista.
+// formatRunwayAnalyses groups analyses by runway and shows both directions,
+// highlighting the preferable one for each runway.
 func formatRunwayAnalyses(analyses []RunwayAnalysis, runways []Runway) string {
 	var sb strings.Builder
-	// Le analisi sono in coppia: [dir1, dir2] per ogni pista
+	// Analyses are in pairs: [dir1, dir2] for each runway
 	for i := 0; i+1 < len(analyses); i += 2 {
 		a1 := analyses[i]
 		a2 := analyses[i+1]
 
 		rwyPair := a1.Ident + "/" + a2.Ident
 
-		// La direzione preferita è quella con headwind (h > 0) e minor traverso.
-		// Se entrambe hanno headwind negativo (vento in coda su entrambe), scegliamo il meno peggio.
+		// The preferred direction is the one with headwind (h > 0) and least crosswind.
+		// If both have negative headwind (tailwind on both), we choose the least worse one.
 		prefer1 := preferDirection(a1, a2)
 
 		sb.WriteString(fmt.Sprintf("▪️ RWY <b>%s</b>\n", rwyPair))
@@ -210,9 +210,9 @@ func formatRunwayAnalyses(analyses []RunwayAnalysis, runways []Runway) string {
 	return sb.String()
 }
 
-// preferDirection ritorna true se a1 è preferibile ad a2.
+// preferDirection returns true if a1 is preferable to a2.
 func preferDirection(a1, a2 RunwayAnalysis) bool {
-	// Headwind > 0 = vento di prua (buono). Preferiamo headwind positivo.
+	// Headwind > 0 = headwind (good). We prefer positive headwind.
 	a1head := a1.Headwind >= 0
 	a2head := a2.Headwind >= 0
 	if a1head && !a2head {
@@ -221,7 +221,7 @@ func preferDirection(a1, a2 RunwayAnalysis) bool {
 	if !a1head && a2head {
 		return false
 	}
-	// Entrambe uguali: scegliamo il minor traverso
+	// Both equal: we choose the least crosswind
 	return a1.Crosswind <= a2.Crosswind
 }
 
@@ -238,7 +238,7 @@ func formatOneDirection(a RunwayAnalysis, preferred bool) string {
 	}
 
 	return fmt.Sprintf("  RWY <b>%s</b>%s: traverso <b>%.0f kt</b> · %s %.0f kt\n",
-		a.Ident, label, a.Crosswind, windType, absHead)
+a.Ident, label, a.Crosswind, windType, absHead)
 }
 
 func formatWind(metar *MetarResponse) string {
@@ -255,17 +255,17 @@ func formatWind(metar *MetarResponse) string {
 	return s
 }
 
-func htmlEscape(s string) string {
+func HTMLEscape(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
 }
 
-// formatMetarTime converte il timestamp ISO del METAR in formato leggibile.
-// Es. "2026-03-27T17:50:00Z" → "27 Mar 2026 17:50 UTC"
-// Fallback al campo repr grezzo se il parsing fallisce.
-func formatMetarTime(t MetarTime) string {
+// FormatMetarTime converts the METAR ISO timestamp into a readable format.
+// e.g. "2026-03-27T17:50:00Z" -> "27 Mar 2026 17:50 UTC"
+// Fallback to the raw repr field if parsing fails.
+func FormatMetarTime(t MetarTime) string {
 	if t.Dt != "" {
 		parsed, err := time.Parse(time.RFC3339, t.Dt)
 		if err == nil {

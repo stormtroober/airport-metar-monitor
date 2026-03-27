@@ -1,13 +1,13 @@
-package main
+package storage
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"sync"
+"encoding/json"
+"fmt"
+"os"
+"sync"
 )
 
-// Airport rappresenta un aeroporto registrato da un utente.
+// Airport represents an airport registered by a user.
 type Airport struct {
 	ICAO string `json:"icao"`
 	Name string `json:"name"`
@@ -18,15 +18,15 @@ type storeData struct {
 	Airports map[int64][]Airport `json:"airports"`
 }
 
-// Store gestisce la persistenza degli aeroporti per ogni chat Telegram.
+// Store manages the persistence of airports for each Telegram chat.
 type Store struct {
-	mu             sync.RWMutex
-	data           storeData
-	path           string
-	lastMetarTime  map[string]string // key: "chatID:ICAO" → last metar time repr
+	mu            sync.RWMutex
+	data          storeData
+	path          string
+	lastMetarTime map[string]string // key: "chatID:ICAO" → last metar time repr
 }
 
-// NewStore carica o crea un nuovo store dal file specificato.
+// NewStore loads or creates a new store from the specified file.
 func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path:          path,
@@ -57,7 +57,7 @@ func (s *Store) save() error {
 	return os.WriteFile(s.path, data, 0644)
 }
 
-// GetAirports restituisce gli aeroporti registrati per una chat.
+// GetAirports returns the registered airports for a chat.
 func (s *Store) GetAirports(chatID int64) []Airport {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -67,7 +67,7 @@ func (s *Store) GetAirports(chatID int64) []Airport {
 	return out
 }
 
-// AddAirport aggiunge un aeroporto (evita duplicati). Restituisce false se già presente.
+// AddAirport adds an airport (prevents duplicates). Returns false if already present.
 func (s *Store) AddAirport(chatID int64, airport Airport) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,7 +80,7 @@ func (s *Store) AddAirport(chatID int64, airport Airport) (bool, error) {
 	return true, s.save()
 }
 
-// RemoveAirport rimuove un aeroporto. Restituisce false se non trovato.
+// RemoveAirport removes an airport. Returns false if not found.
 func (s *Store) RemoveAirport(chatID int64, icao string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,7 +94,7 @@ func (s *Store) RemoveAirport(chatID int64, icao string) (bool, error) {
 	return false, nil
 }
 
-// AllChats restituisce una copia della mappa chatID → aeroporti.
+// AllChats returns a copy of the chatID -> airports map.
 func (s *Store) AllChats() map[int64][]Airport {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -107,8 +107,8 @@ func (s *Store) AllChats() map[int64][]Airport {
 	return out
 }
 
-// IsNewMetar controlla se il time del METAR è diverso dall'ultimo noto.
-// Se è nuovo, aggiorna il record e restituisce true.
+// IsNewMetar checks if the METAR time is different from the last known one.
+// If it is new, it updates the record and returns true.
 func (s *Store) IsNewMetar(chatID int64, icao, timeRepr string) bool {
 	key := fmt.Sprintf("%d:%s", chatID, icao)
 	s.mu.Lock()

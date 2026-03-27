@@ -1,30 +1,33 @@
-package main
+package bot
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
+"context"
+"fmt"
+"log"
+"regexp"
+"strings"
+"sync"
+"time"
 
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
+"airport-metar-monitor/internal/storage"
+"airport-metar-monitor/internal/weather"
+
+"github.com/go-telegram/bot"
+"github.com/go-telegram/bot/models"
 )
 
 var icaoRegexp = regexp.MustCompile(`^[A-Z]{4}$`)
 
-// BotHandler contiene le dipendenze per i gestori Telegram.
+// BotHandler contains dependencies for Telegram handlers.
 type BotHandler struct {
-	avwx     *AVWXClient
-	store    *Store
+	avwx     *weather.AVWXClient
+	store    *storage.Store
 	interval time.Duration
 	tickers  map[int64]context.CancelFunc
 	mu       sync.Mutex
 }
 
-func NewBotHandler(avwx *AVWXClient, store *Store, interval time.Duration) *BotHandler {
+func NewBotHandler(avwx *weather.AVWXClient, store *storage.Store, interval time.Duration) *BotHandler {
 	return &BotHandler{
 		avwx:     avwx,
 		store:    store,
@@ -34,7 +37,7 @@ func NewBotHandler(avwx *AVWXClient, store *Store, interval time.Duration) *BotH
 }
 
 func commandArg(text string) string {
-	// Toglie il comando (prima parola, incluso eventuale @botname) e restituisce il resto
+	// Removes the command (first word, including optional @botname) and returns the rest
 	idx := strings.Index(text, " ")
 	if idx < 0 {
 		return ""
@@ -45,31 +48,31 @@ func commandArg(text string) string {
 // HandleStart — /start
 func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models.Update) {
 	chatID := update.Message.Chat.ID
-	
-	// Avvia il ticker per l'utente
+
+	// Start the ticker for the user
 	h.startTickerForChat(ctx, b, chatID)
 
-	// Prepara il messaggio di benvenuto e indicazione degli aeroporti in loop
+	// Prepares the welcome message and lists monitored airports
 	msgContext := `✈️ <b>METAR Monitor</b>
 
-Monitoro il METAR e il vento traverso per i tuoi aeroporti, aggiornandoti automaticamente.
+I monitor METAR and crosswind for your airports, updating you automatically.
 
-<b>Comandi:</b>
-/add <i>ICAO</i> — Aggiungi un aeroporto
-/list — Aeroporti registrati
-/remove <i>ICAO</i> — Rimuovi un aeroporto
-/get — Aggiorna subito tutti i tuoi aeroporti
-/get <i>ICAO</i> — METAR istantaneo per qualsiasi aeroporto
-/metar <i>ICAO</i> — METAR raw istantaneo`
+<b>Commands:</b>
+/add <i>ICAO</i> — Add an airport
+/list — Registered airports
+/remove <i>ICAO</i> — Remove an airport
+/get — Update all your airports now
+/get <i>ICAO</i> — Instant METAR for any airport
+/metar <i>ICAO</i> — Instant raw METAR`
 
 	airports := h.store.GetAirports(chatID)
 	if len(airports) > 0 {
-		msgContext += "\n\n🟢 <b>Monitoraggio periodico avviato per:</b>"
+msgContext += "\n\n✅ <b>Periodic monitoring started for:</b>"
 		for _, a := range airports {
-			msgContext += fmt.Sprintf("\n• %s — %s", a.ICAO, htmlEscape(a.Name))
+			msgContext += fmt.Sprintf("\n• %s — %s", a.ICAO, weather.HTMLEscape(a.Name))
 		}
 	} else {
-		msgContext += "\n\n🟡 Nessun aeroporto registrato al momento. Usa /add per iniziare e sarai aggiornato periodicamente!"
+msgContext += "\n\n🟡 No airports registered at the moment. Use /add to start and you will be updated periodically!"
 	}
 
 	b.SendMessage(ctx, &bot.SendMessageParams{
@@ -79,7 +82,7 @@ Monitoro il METAR e il vento traverso per i tuoi aeroporti, aggiornandoti automa
 	})
 }
 
-// startTickerForChat avvia un goroutine per gli aggiornamenti periodici della specifica chat.
+// startTickerForChat starts a goroutine for periodic updates for a specific chat.
 func (h *BotHandler) startTickerForChat(ctx context.Context, b *bot.Bot, chatID int64) {
 	h.mu.Lock()
 	if applyCancel, ok := h.tickers[chatID]; ok {
@@ -97,7 +100,7 @@ func (h *BotHandler) startTickerForChat(ctx context.Context, b *bot.Bot, chatID 
 			case <-tCtx.Done():
 				return
 			case <-ticker.C:
-				sendUpdatesForChat(tCtx, b, h.avwx, h.store, chatID)
+				h.sendUpdatesForChat(tCtx, b, chatID)
 			}
 		}
 	}()
@@ -111,7 +114,7 @@ func (h *BotHandler) HandleAdd(ctx context.Context, b *bot.Bot, update *models.U
 	if arg == "" {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "ℹ️ Usa: /add <ICAO>\nEs: /add EPKK",
+			Text:   "ℹ️ Usage: /add <ICAO>\nExample: /add EPKK",
 		})
 		return
 	}
@@ -122,50 +125,50 @@ func (h *BotHandler) HandleAdd(ctx context.Context, b *bot.Bot, update *models.U
 	} else {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "❌ Formato ICAO non valido. Usa un codice di 4 lettere (es. LIRF).",
+			Text:   "❌ Invalid ICAO format. Use a 4-letter code (e.g. LIRF).",
 		})
 	}
 }
 
-// addByICAO recupera la stazione e la aggiunge allo store.
+// addByICAO fetches the station and adds it to the store.
 func (h *BotHandler) addByICAO(ctx context.Context, b *bot.Bot, chatID int64, icao string) {
 	station, err := h.avwx.FetchStation(icao)
 	if err != nil {
 		log.Printf("[add] FetchStation(%s): %v", icao, err)
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
-			Text:      fmt.Sprintf("❌ Stazione <b>%s</b> non trovata. Controlla il codice ICAO.", icao),
+			Text:      fmt.Sprintf("❌ Station <b>%s</b> not found. Check the ICAO code.", icao),
 			ParseMode: models.ParseModeHTML,
 		})
 		return
 	}
-	added, err := h.store.AddAirport(chatID, Airport{ICAO: station.ICAO, Name: station.Name, City: station.City})
+	added, err := h.store.AddAirport(chatID, storage.Airport{ICAO: station.ICAO, Name: station.Name, City: station.City})
 	if err != nil {
 		log.Printf("[add] store error: %v", err)
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Errore nel salvataggio."})
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Error while saving."})
 		return
 	}
 	if !added {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
-			Text:      fmt.Sprintf("ℹ️ <b>%s</b> è già nella tua lista.", station.ICAO),
+			Text:      fmt.Sprintf("ℹ️ <b>%s</b> is already in your list.", station.ICAO),
 			ParseMode: models.ParseModeHTML,
 		})
 		return
 	}
 	b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    chatID,
-		Text:      fmt.Sprintf("✅ <b>%s</b> — %s aggiunto! Ecco il METAR attuale:", station.ICAO, htmlEscape(station.Name)),
+		Text:      fmt.Sprintf("✅ <b>%s</b> — %s added! Here is the current METAR:", station.ICAO, weather.HTMLEscape(station.Name)),
 		ParseMode: models.ParseModeHTML,
 	})
 
-	// Invia il METAR immediato
-	msg, err := buildMetarMessage(h.avwx, station.ICAO)
+	// Send immediate METAR
+	msg, err := h.buildMetarMessage(station.ICAO)
 	if err != nil {
 		log.Printf("[add] buildMetarMessage(%s): %v", station.ICAO, err)
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "⚠️ Aggiunto, ma impossibile recuperare il METAR al momento.",
+			Text:   "⚠️ Added, but unable to retrieve METAR at the moment.",
 		})
 		return
 	}
@@ -176,7 +179,6 @@ func (h *BotHandler) addByICAO(ctx context.Context, b *bot.Bot, chatID int64, ic
 	})
 }
 
-
 // HandleList — /list
 func (h *BotHandler) HandleList(ctx context.Context, b *bot.Bot, update *models.Update) {
 	chatID := update.Message.Chat.ID
@@ -184,16 +186,16 @@ func (h *BotHandler) HandleList(ctx context.Context, b *bot.Bot, update *models.
 	if len(airports) == 0 {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "📋 Nessun aeroporto registrato. Usa /add per aggiungerne uno.",
+			Text:   "📋 No airports registered. Use /add to add one.",
 		})
 		return
 	}
 	var sb strings.Builder
-	sb.WriteString("📋 <b>Aeroporti registrati:</b>\n\n")
+	sb.WriteString("📋 <b>Registered airports:</b>\n\n")
 	for _, a := range airports {
-		sb.WriteString(fmt.Sprintf("• <b>%s</b> — %s\n", a.ICAO, htmlEscape(a.Name)))
+		sb.WriteString(fmt.Sprintf("• <b>%s</b> — %s\n", a.ICAO, weather.HTMLEscape(a.Name)))
 	}
-	sb.WriteString("\nUsa /remove <i>ICAO</i> per rimuoverne uno.")
+	sb.WriteString("\nUse /remove <i>ICAO</i> to remove one.")
 	b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      sb.String(),
@@ -206,25 +208,25 @@ func (h *BotHandler) HandleRemove(ctx context.Context, b *bot.Bot, update *model
 	chatID := update.Message.Chat.ID
 	icao := strings.ToUpper(strings.TrimSpace(commandArg(update.Message.Text)))
 	if icao == "" {
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "ℹ️ Usa: /remove <ICAO>"})
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "ℹ️ Usage: /remove <ICAO>"})
 		return
 	}
 	removed, err := h.store.RemoveAirport(chatID, icao)
 	if err != nil {
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Errore durante la rimozione."})
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Error during removal."})
 		return
 	}
 	if !removed {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
-			Text:      fmt.Sprintf("ℹ️ <b>%s</b> non era nella tua lista.", icao),
+			Text:      fmt.Sprintf("ℹ️ <b>%s</b> was not in your list.", icao),
 			ParseMode: models.ParseModeHTML,
 		})
 		return
 	}
-	b.SendMessage(ctx, &bot.SendMessageParams{
+		b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    chatID,
-		Text:      fmt.Sprintf("🗑️ <b>%s</b> rimosso.", icao),
+		Text:      fmt.Sprintf("🗑️ <b>%s</b> removed.", icao),
 		ParseMode: models.ParseModeHTML,
 	})
 }
@@ -236,16 +238,16 @@ func (h *BotHandler) HandleMetar(ctx context.Context, b *bot.Bot, update *models
 	if !icaoRegexp.MatchString(icao) {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "ℹ️ Usa: /metar <ICAO> (es. /metar EPKK)",
+			Text:   "ℹ️ Usage: /metar <ICAO> (e.g. /metar EPKK)",
 		})
 		return
 	}
-	msg, err := buildMetarMessage(h.avwx, icao)
+	msg, err := h.buildMetarMessage(icao)
 	if err != nil {
 		log.Printf("[metar] %s: %v", icao, err)
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
-			Text:      fmt.Sprintf("❌ Errore METAR per <b>%s</b>.", htmlEscape(icao)),
+			Text:      fmt.Sprintf("❌ METAR error for <b>%s</b>.", weather.HTMLEscape(icao)),
 			ParseMode: models.ParseModeHTML,
 		})
 		return
@@ -257,34 +259,34 @@ func (h *BotHandler) HandleMetar(ctx context.Context, b *bot.Bot, update *models
 	})
 }
 
-// buildMetarMessage recupera METAR e stazione e costruisce il messaggio.
-func buildMetarMessage(avwx *AVWXClient, icao string) (string, error) {
-	metar, err := avwx.FetchMetar(icao)
+// buildMetarMessage fetches METAR and station and builds the message.
+func (h *BotHandler) buildMetarMessage(icao string) (string, error) {
+	metar, err := h.avwx.FetchMetar(icao)
 	if err != nil {
 		return "", fmt.Errorf("METAR: %w", err)
 	}
-	station, err := avwx.FetchStation(icao)
+	station, err := h.avwx.FetchStation(icao)
 	if err != nil {
 		return "", fmt.Errorf("station: %w", err)
 	}
-	return FormatMetarMessage(station, metar), nil
+	return weather.FormatMetarMessage(station, metar), nil
 }
 
 // HandleGet — /get [ICAO]
-// Senza argomento: aggiorna tutti gli aeroporti registrati per questa chat.
-// Con ICAO: recupera il METAR di quell'aeroporto specifico (anche non in lista).
+// Without argument: updates all registered airports for this chat.
+// With ICAO: fetches METAR for that specific airport (even if not in list).
 func (h *BotHandler) HandleGet(ctx context.Context, b *bot.Bot, update *models.Update) {
 	chatID := update.Message.Chat.ID
 	arg := strings.ToUpper(strings.TrimSpace(commandArg(update.Message.Text)))
 
 	if icaoRegexp.MatchString(arg) {
-		// ICAO specifico
-		msg, err := buildMetarMessage(h.avwx, arg)
+		// Specific ICAO
+		msg, err := h.buildMetarMessage(arg)
 		if err != nil {
 			log.Printf("[get] %s: %v", arg, err)
 			b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:    chatID,
-				Text:      fmt.Sprintf("❌ Impossibile recuperare METAR per <b>%s</b>.", htmlEscape(arg)),
+				Text:      fmt.Sprintf("❌ Unable to retrieve METAR for <b>%s</b>.", weather.HTMLEscape(arg)),
 				ParseMode: models.ParseModeHTML,
 			})
 			return
@@ -297,26 +299,26 @@ func (h *BotHandler) HandleGet(ctx context.Context, b *bot.Bot, update *models.U
 		return
 	}
 
-	// Nessun argomento (o argomento non valido): aggiorna tutti gli aeroporti della chat
+	// No argument (or invalid argument): updates all airports for the chat
 	airports := h.store.GetAirports(chatID)
 	if len(airports) == 0 {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "📋 Nessun aeroporto registrato. Usa /add <ICAO> per aggiungerne uno.",
+			Text:   "📋 No airports registered. Use /add <ICAO> to add one.",
 		})
 		return
 	}
 	b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   fmt.Sprintf("🔄 Aggiornamento in corso per %d aeroporti...", len(airports)),
+		Text:   fmt.Sprintf("🔄 Updating %d airports...", len(airports)),
 	})
 	for _, airport := range airports {
-		msg, err := buildMetarMessage(h.avwx, airport.ICAO)
+		msg, err := h.buildMetarMessage(airport.ICAO)
 		if err != nil {
 			log.Printf("[get] %s: %v", airport.ICAO, err)
 			b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:    chatID,
-				Text:      fmt.Sprintf("❌ Errore METAR per <b>%s</b>.", htmlEscape(airport.ICAO)),
+				Text:      fmt.Sprintf("❌ METAR error for <b>%s</b>.", weather.HTMLEscape(airport.ICAO)),
 				ParseMode: models.ParseModeHTML,
 			})
 			continue
@@ -327,4 +329,50 @@ func (h *BotHandler) HandleGet(ctx context.Context, b *bot.Bot, update *models.U
 			ParseMode: models.ParseModeHTML,
 		})
 	}
+}
+
+// sendUpdatesForChat sends the METAR for each airport in a specific chat,
+// skipping airports whose METAR hasn't changed since the last sending.
+func (h *BotHandler) sendUpdatesForChat(ctx context.Context, b *bot.Bot, chatID int64) {
+airports := h.store.GetAirports(chatID)
+for _, airport := range airports {
+metar, station, err := h.fetchMetarData(airport.ICAO)
+if err != nil {
+log.Printf("[ticker] %s for chat %d: %v", airport.ICAO, chatID, err)
+continue
+}
+if !h.store.IsNewMetar(chatID, airport.ICAO, metar.Time.Repr) {
+log.Printf("[ticker] %s for chat %d: no update (same timestamp)", airport.ICAO, chatID)
+
+// Send notice message
+b.SendMessage(ctx, &bot.SendMessageParams{
+ChatID:    chatID,
+Text:      fmt.Sprintf("ℹ️ No new METAR for <b>%s</b>. Latest report is from %s.", airport.ICAO, weather.FormatMetarTime(metar.Time)),
+ParseMode: "HTML",
+})
+continue
+}
+msg := weather.FormatMetarMessage(station, metar)
+_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+ChatID:    chatID,
+Text:      msg,
+ParseMode: "HTML",
+})
+if err != nil {
+log.Printf("[ticker] SendMessage a %d: %v", chatID, err)
+}
+}
+}
+
+// fetchMetarData fetches METAR and station data.
+func (h *BotHandler) fetchMetarData(icao string) (*weather.MetarResponse, *weather.StationResponse, error) {
+metar, err := h.avwx.FetchMetar(icao)
+if err != nil {
+return nil, nil, fmt.Errorf("METAR: %w", err)
+}
+station, err := h.avwx.FetchStation(icao)
+if err != nil {
+return nil, nil, fmt.Errorf("station: %w", err)
+}
+return metar, station, nil
 }
