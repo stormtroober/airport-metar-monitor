@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+airport-metar-monitor
 
 # Test binary, built with `go test -c`
 *.test
@@ -26,6 +27,9 @@ go.work.sum
 
 # env file
 .env
+
+# dati persistenti bot
+airports.json
 
 # Editor/IDE
 # .idea/
